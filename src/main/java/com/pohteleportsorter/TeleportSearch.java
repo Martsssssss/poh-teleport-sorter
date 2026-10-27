@@ -1,10 +1,8 @@
 package com.pohteleportsorter;
 
-import java.awt.KeyEventDispatcher;
 import java.awt.event.KeyEvent;
 import javax.inject.Inject;
 import javax.inject.Singleton;
-import javax.swing.text.JTextComponent;
 import net.runelite.api.Client;
 import net.runelite.api.FontID;
 import net.runelite.api.FontTypeFace;
@@ -18,23 +16,25 @@ import net.runelite.api.widgets.WidgetTextAlignment;
 import net.runelite.api.widgets.WidgetType;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.eventbus.Subscribe;
+import net.runelite.client.input.KeyListener;
 import net.runelite.client.util.Text;
 
 /**
  * The search field shown in the title bar of the Portal Nexus and the jewellery box, left of the title.
  *
- * While the field is being typed in, every key goes to it and nowhere else. Keys are taken in Java's
- * keyboard dispatcher, before they reach the game or any RuneLite plugin, so neither the window's own
- * hotkeys nor another plugin's teleport shortcuts can fire while typing. (A RuneLite key listener isn't
- * enough: listeners run in the order plugins started, so a plugin that started earlier sees keys first.)
- * Keys typed into RuneLite's own text fields (the side panel) are never touched.
+ * While the field is being typed in, every key goes to it: the key is consumed, so the window's own
+ * hotkeys don't fire, and neither do the shortcuts of any plugin whose key listener runs after this one.
+ *
+ * Better Teleport Menu runs these windows' hotkeys itself, from its own key listener. RuneLite gives keys
+ * to listeners in the order their plugins started, which can't be controlled, so it could see the keys
+ * typed into the search first and teleport. The search is therefore left out while that plugin is on.
  *
  * Enter finishes typing but keeps the results, so the next key press is a normal hotkey again; Esc clears
  * the search; Ctrl+A selects the whole search, so the next key replaces it and Backspace or Delete clears
  * it. Only one of the two windows can be open at a time, so one field is shared between them.
  */
 @Singleton
-public class TeleportSearch implements KeyEventDispatcher
+public class TeleportSearch implements KeyListener
 {
 	/** Where the field goes: the title bar's clear band (top to bottom) and its left inner edge. */
 	static final class Band
@@ -72,6 +72,9 @@ public class TeleportSearch implements KeyEventDispatcher
 
 	@Inject
 	private ClientThread clientThread;
+
+	@Inject
+	private BetterTeleportMenu betterTeleportMenu;
 
 	// Written on the AWT thread by the key dispatcher, read on the client thread
 	private volatile boolean typing;
@@ -314,16 +317,45 @@ public class TeleportSearch implements KeyEventDispatcher
 		}
 	}
 
-	/** Runs before the game and every plugin. Returns true to swallow the key. */
-	@Override
-	public boolean dispatchKeyEvent(KeyEvent e)
+	/**
+	 * Whether the search field can be shown: not while Better Teleport Menu is on, since its hotkeys could
+	 * fire while typing. Checked each time a window opens.
+	 */
+	boolean isAvailable()
 	{
-		// Never touch typing in RuneLite's own text fields (side panel searches, config boxes and so on)
-		if (e.getComponent() instanceof JTextComponent)
-		{
-			return false;
-		}
+		return !betterTeleportMenu.isActive();
+	}
 
+	@Override
+	public void keyPressed(KeyEvent e)
+	{
+		take(e);
+	}
+
+	@Override
+	public void keyTyped(KeyEvent e)
+	{
+		take(e);
+	}
+
+	@Override
+	public void keyReleased(KeyEvent e)
+	{
+		take(e);
+	}
+
+	/** Consumes the key, so the game and later listeners never see it, if it belongs to the search. */
+	private void take(KeyEvent e)
+	{
+		if (handle(e))
+		{
+			e.consume();
+		}
+	}
+
+	/** Returns true if the key belongs to the search field. */
+	private boolean handle(KeyEvent e)
+	{
 		int code = e.getKeyCode();
 		if (!typing)
 		{

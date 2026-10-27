@@ -11,7 +11,10 @@ import net.runelite.api.FontID;
 import net.runelite.api.FontTypeFace;
 import net.runelite.api.Point;
 import net.runelite.api.WidgetNode;
+import net.runelite.api.MenuAction;
+import net.runelite.api.MenuEntry;
 import net.runelite.api.events.ClientTick;
+import net.runelite.api.events.MenuOpened;
 import net.runelite.api.events.ScriptPostFired;
 import net.runelite.api.gameval.InterfaceID;
 import net.runelite.api.gameval.SpriteID;
@@ -102,6 +105,9 @@ public class JewelleryBoxSorter
 
 	@Inject
 	private TeleportSearch search;
+
+	@Inject
+	private TeleportHotkeys hotkeys;
 
 	// The game's own text for each original teleport, captured when the box opens, so Wilderness styling can
 	// be applied to and removed from the default grid
@@ -302,13 +308,155 @@ public class JewelleryBoxSorter
 			buildStrip(universe);
 			selectorShown = true;
 		}
-		if (config.showSearch())
+		if (config.showSearch() && search.isAvailable())
 		{
 			Widget frame = client.getWidget(InterfaceID.PohJewelleryBox.FRAME);
 			extendTitleBar(frame);
 			search.attach(universe, frame, SEARCH_BAND, () -> apply(config.jewelleryBoxMode()));
 		}
 		apply(config.jewelleryBoxMode());
+		registerHotkeys();
+	}
+
+	/** Tells the custom hotkeys which teleports this box has, each used exactly as clicking it would. */
+	private void registerHotkeys()
+	{
+		List<TeleportHotkeys.Target> targets = new ArrayList<>();
+		for (Group g : groups)
+		{
+			for (Widget orig : g.teleports)
+			{
+				targets.add(new TeleportHotkeys.Target(sortName(orig), gameKey(orig), () ->
+				{
+					search.stopTyping();
+					runOriginal(orig);
+				}));
+			}
+		}
+		hotkeys.setTargets(TeleportHotkeys.Kind.JEWELLERY, targets, this::redrawLabels);
+	}
+
+	/** Redraws every teleport's text, after a custom hotkey changes. */
+	private void redrawLabels()
+	{
+		if (client.getWidget(InterfaceID.PohJewelleryBox.UNIVERSE) == null || groups.isEmpty())
+		{
+			return;
+		}
+		if (listActive)
+		{
+			showList(config.jewelleryBoxMode(), true);
+		}
+		else
+		{
+			showDefault();
+		}
+	}
+
+	/** The game's own key for a teleport, from the text the game gave it ("<col=ccccff>1:</col> Ring of dueling"). */
+	private String gameKey(Widget orig)
+	{
+		String base = Text.removeTags(originalTexts.getOrDefault(orig, ""));
+		int colon = base.indexOf(':');
+		return colon > 0 && colon < 4 ? base.substring(0, colon).trim() : "";
+	}
+
+	/**
+	 * The text a teleport should show, before Wilderness styling: the game's own, with a custom hotkey in place of
+	 * the game's key where one is set.
+	 */
+	private String baseText(Widget orig)
+	{
+		String base = originalTexts.getOrDefault(orig, orig.getText());
+		if (!hotkeys.isEnabled())
+		{
+			return base;
+		}
+		return TeleportHotkeys.relabel(TeleportHotkeys.Kind.JEWELLERY, base,
+			hotkeys.label(TeleportHotkeys.Kind.JEWELLERY, sortName(orig), gameKey(orig)));
+	}
+
+	/**
+	 * Adds "Set hotkey" (and "Reset hotkey" when one is set) to the right-click menu of a teleport, in the grid
+	 * and in the lists. Added only when the menu opens, below the game's own options.
+	 */
+	@Subscribe
+	public void onMenuOpened(MenuOpened event)
+	{
+		if (groups.isEmpty() || !hotkeys.isEnabled() || client.getWidget(InterfaceID.PohJewelleryBox.UNIVERSE) == null)
+		{
+			return;
+		}
+		Widget orig = null;
+		for (MenuEntry me : event.getMenuEntries())
+		{
+			orig = teleportFor(me.getParam1(), me.getParam0());
+			if (orig != null)
+			{
+				break;
+			}
+		}
+		if (orig == null)
+		{
+			return;
+		}
+		final String name = sortName(orig);
+		client.getMenu().createMenuEntry(1)
+			.setOption("Set hotkey")
+			.setTarget("<col=ff9040>" + name + "</col>")
+			.setType(MenuAction.RUNELITE)
+			.onClick(me ->
+			{
+				search.stopTyping();
+				hotkeys.startCapture(TeleportHotkeys.Kind.JEWELLERY, name);
+			});
+		if (hotkeys.get(TeleportHotkeys.Kind.JEWELLERY, name) != null)
+		{
+			client.getMenu().createMenuEntry(1)
+				.setOption("Reset hotkey")
+				.setTarget("<col=ff9040>" + name + "</col>")
+				.setType(MenuAction.RUNELITE)
+				.onClick(me ->
+				{
+					hotkeys.reset(TeleportHotkeys.Kind.JEWELLERY, name);
+					redrawLabels();
+				});
+		}
+	}
+
+	/** The game's teleport a menu entry is on: one of the grid's own teleports, or a list row standing in for one. */
+	private Widget teleportFor(int componentId, int childIndex)
+	{
+		if (childIndex < 0)
+		{
+			return null;
+		}
+		if (listActive && componentId == InterfaceID.PohJewelleryBox.DUELING)
+		{
+			for (Row r : rows)
+			{
+				if (r.mine.getIndex() == childIndex && !r.mine.isHidden())
+				{
+					return r.original;
+				}
+			}
+			return null;
+		}
+		if (listActive)
+		{
+			return null;
+		}
+		for (Group g : groups)
+		{
+			for (Widget orig : g.teleports)
+			{
+				if (orig.getId() == componentId && orig.getIndex() == childIndex)
+				{
+					return orig;
+				}
+			}
+		}
+		return null;
 	}
 
 	/**
@@ -405,6 +553,18 @@ public class JewelleryBoxSorter
 				else if (!isWaiting)
 				{
 					waiting.remove(orig);
+					// After "Please wait..." the game puts its own text back; show the right key and styling again.
+					// Only the game's own text is replaced, so nothing another plugin wrote is ever overwritten.
+					String gameText = originalTexts.get(orig);
+					if (t != null && t.equals(gameText))
+					{
+						String name = sortName(orig);
+						String want = styled(baseText(orig), name, JewelleryTeleports.isWild(name));
+						if (!t.equals(want))
+						{
+							orig.setText(want);
+						}
+					}
 				}
 			}
 		}
@@ -415,7 +575,9 @@ public class JewelleryBoxSorter
 			if (t != null && !t.equals(r.lastSeen))
 			{
 				r.lastSeen = t;
-				r.mine.setText(t.contains("Please wait") ? t : styled(t, r.tele.name, r.tele.wild));
+				// The row shows the key this plugin would show, or, with Better Teleport Menu on, whatever it wrote
+				String text = hotkeys.isEnabled() ? baseText(r.original) : t;
+				r.mine.setText(t.contains("Please wait") ? t : styled(text, r.tele.name, r.tele.wild));
 			}
 		}
 	}
@@ -594,11 +756,10 @@ public class JewelleryBoxSorter
 			{
 				String name = sortName(orig);
 				orig.setHidden(!search.matches(name, g.title));
-				String base = originalTexts.get(orig);
 				String now = orig.getText();
-				if (base != null && now != null && !now.contains("Please wait"))
+				if (originalTexts.containsKey(orig) && now != null && !now.contains("Please wait"))
 				{
-					orig.setText(styled(base, name, JewelleryTeleports.isWild(name)));
+					orig.setText(styled(baseText(orig), name, JewelleryTeleports.isWild(name)));
 				}
 			}
 		}
@@ -1073,9 +1234,8 @@ public class JewelleryBoxSorter
 	{
 		Widget orig = tele.orig;
 		styleText(t, FontID.PLAIN_11, TELE_COLOUR);
-		String base = originalTexts.getOrDefault(orig, orig.getText());
 		String now = orig.getText();
-		t.setText(now != null && now.contains("Please wait") ? now : styled(base, tele.name, tele.wild));
+		t.setText(now != null && now.contains("Please wait") ? now : styled(baseText(orig), tele.name, tele.wild));
 		String[] actions = orig.getActions();
 		String op = actions != null && actions.length > 0 && actions[0] != null ? actions[0] : "Teleport";
 		clearOps(t);

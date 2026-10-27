@@ -9,11 +9,11 @@ import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Client;
 import net.runelite.api.FontID;
-import java.awt.KeyboardFocusManager;
 import java.awt.event.KeyEvent;
 import net.runelite.api.MenuAction;
 import net.runelite.api.MenuEntry;
 import net.runelite.api.ScriptID;
+import net.runelite.api.events.ClientTick;
 import net.runelite.api.events.MenuOpened;
 import net.runelite.api.events.MenuOptionClicked;
 import net.runelite.api.events.ScriptPostFired;
@@ -41,8 +41,8 @@ import net.runelite.client.util.Text;
 @Slf4j
 @PluginDescriptor(
 	name = "POH Teleport Sorter",
-	description = "Sort, pin and search the Portal Nexus and ornate jewellery box teleport menus",
-	tags = {"poh", "portal", "nexus", "teleport", "sort", "house", "jewellery", "jewelry", "box", "pin", "search", "recent"}
+	description = "Sort, pin, search and set your own hotkeys for the Portal Nexus and ornate jewellery box teleports",
+	tags = {"poh", "portal", "nexus", "teleport", "sort", "house", "jewellery", "jewelry", "box", "pin", "search", "recent", "hotkey", "keybind"}
 )
 public class PohTeleportSorterPlugin extends Plugin implements KeyListener
 {
@@ -50,6 +50,10 @@ public class PohTeleportSorterPlugin extends Plugin implements KeyListener
 	// telenexus_teleport_init (onload of interface 17) and the server-run list rebuild wrapper
 	private static final int SCRIPT_TELENEXUS_TELEPORT_INIT = 2672;
 	private static final int SCRIPT_TELENEXUS_LIST_REBUILD = 2673;
+	// Finds a component's child and resumes it (cc_find + cc_resume_pausebutton), as the game's nexus hotkey does
+	private static final int SCRIPT_RESUME_PAUSEBUTTON = 1437;
+	// The game ignores its nexus hotkeys for 20 client cycles after one is used; custom hotkeys do the same
+	private static final int HOTKEY_COOLDOWN = 20;
 
 	// Matches telenexus_options: p12_full, orange 0xff981f, white on hover, text shadow
 	private static final int TEXT_COLOUR = 0xff981f;
@@ -103,6 +107,11 @@ public class PohTeleportSorterPlugin extends Plugin implements KeyListener
 	private TeleportSearch search;
 
 	@Inject
+	private TeleportHotkeys hotkeys;
+
+	private int lastHotkeyCycle;
+
+	@Inject
 	private SpriteManager spriteManager;
 
 	// The rows as last laid out, used to work out which teleport a right-click is on
@@ -154,8 +163,11 @@ public class PohTeleportSorterPlugin extends Plugin implements KeyListener
 		spriteManager.addSpriteOverrides(PinSprite.values());
 		eventBus.register(jewelleryBoxSorter);
 		eventBus.register(search);
-		// The search field takes keys in Java's keyboard dispatcher, ahead of the game and every plugin
-		KeyboardFocusManager.getCurrentKeyboardFocusManager().addKeyEventDispatcher(search);
+		eventBus.register(hotkeys);
+		// The search is registered first, so while typing it consumes keys before the custom hotkeys, and those
+		// consume the keys they use before the recorder of game hotkeys below
+		keyManager.registerKeyListener(search);
+		keyManager.registerKeyListener(hotkeys);
 		keyManager.registerKeyListener(this);
 		clientThread.invokeLater(() ->
 		{
@@ -171,8 +183,12 @@ public class PohTeleportSorterPlugin extends Plugin implements KeyListener
 	{
 		eventBus.unregister(jewelleryBoxSorter);
 		eventBus.unregister(search);
-		KeyboardFocusManager.getCurrentKeyboardFocusManager().removeKeyEventDispatcher(search);
+		eventBus.unregister(hotkeys);
+		keyManager.unregisterKeyListener(search);
+		keyManager.unregisterKeyListener(hotkeys);
 		keyManager.unregisterKeyListener(this);
+		hotkeys.clearTargets(TeleportHotkeys.Kind.NEXUS);
+		hotkeys.clearTargets(TeleportHotkeys.Kind.JEWELLERY);
 		jewelleryBoxSorter.shutDown();
 		pins.saveIfChanged();
 		clientThread.invokeLater(() ->
@@ -190,6 +206,7 @@ public class PohTeleportSorterPlugin extends Plugin implements KeyListener
 				e.text.setText(e.originalText);
 			}
 			clearState();
+			hotkeys.clearTargets(TeleportHotkeys.Kind.NEXUS);
 			spriteManager.removeSpriteOverrides(PinSprite.values());
 		});
 	}
@@ -198,8 +215,14 @@ public class PohTeleportSorterPlugin extends Plugin implements KeyListener
 	@Subscribe
 	public void onWidgetClosed(net.runelite.api.events.WidgetClosed event)
 	{
-		if (event.getGroupId() == InterfaceID.TELENEXUS_TELEPORT || event.getGroupId() == InterfaceID.POH_JEWELLERY_BOX)
+		if (event.getGroupId() == InterfaceID.TELENEXUS_TELEPORT)
 		{
+			hotkeys.clearTargets(TeleportHotkeys.Kind.NEXUS);
+			pins.saveIfChanged();
+		}
+		else if (event.getGroupId() == InterfaceID.POH_JEWELLERY_BOX)
+		{
+			hotkeys.clearTargets(TeleportHotkeys.Kind.JEWELLERY);
 			pins.saveIfChanged();
 		}
 	}
@@ -261,7 +284,7 @@ public class PohTeleportSorterPlugin extends Plugin implements KeyListener
 	{
 		Widget universe = client.getWidget(InterfaceID.TelenexusTeleport.UNIVERSE);
 		Widget frame = client.getWidget(InterfaceID.TelenexusTeleport.FRAME);
-		boolean withSearch = freshLoad && config.showSearch() && universe != null;
+		boolean withSearch = freshLoad && config.showSearch() && search.isAvailable() && universe != null;
 		// The title bar is made taller first, so everything below is laid out in the space that's left
 		if (withSearch)
 		{
@@ -316,6 +339,7 @@ public class PohTeleportSorterPlugin extends Plugin implements KeyListener
 		originalTexts.clear();
 		currentEntries.clear();
 		hiddenBySearch.clear();
+		waitingRows.clear();
 		pinIcons.clear();
 		pinIconsUsed = 0;
 	}
@@ -333,6 +357,19 @@ public class PohTeleportSorterPlugin extends Plugin implements KeyListener
 		{
 			return;
 		}
+
+		List<TeleportHotkeys.Target> targets = new ArrayList<>();
+		for (Entry e : entries)
+		{
+			targets.add(new TeleportHotkeys.Target(e.pinKey(), e.hotkey, () -> useByHotkey(e)));
+		}
+		hotkeys.setTargets(TeleportHotkeys.Kind.NEXUS, targets, () ->
+		{
+			if (client.getWidget(InterfaceID.TelenexusTeleport.CONTENT) != null)
+			{
+				sortList(config.sortMode());
+			}
+		});
 
 		// The game's own order is the order it laid the rows out in
 		entries.sort(Comparator.comparingInt(e -> e.originalY));
@@ -374,6 +411,7 @@ public class PohTeleportSorterPlugin extends Plugin implements KeyListener
 
 		boolean asterisk = config.wildAsterisk();
 		boolean highlight = config.wildHighlight();
+		boolean customKeys = hotkeys.isEnabled();
 		hidePinIcons();
 		hiddenBySearch.clear();
 
@@ -397,7 +435,11 @@ public class PohTeleportSorterPlugin extends Plugin implements KeyListener
 				continue;
 			}
 
-			String shown = e.originalText;
+			// The key shown at the front of the row: a custom hotkey in place of the game's, where one is set
+			String shown = customKeys
+				? TeleportHotkeys.relabel(TeleportHotkeys.Kind.NEXUS, e.originalText,
+					hotkeys.label(TeleportHotkeys.Kind.NEXUS, e.pinKey(), e.hotkey))
+				: e.originalText;
 			String shownName = e.name;
 			if (mode == SortMode.ALPHABETICAL_ANCIENT)
 			{
@@ -578,6 +620,57 @@ public class PohTeleportSorterPlugin extends Plugin implements KeyListener
 				pins.toggle(PinStore.Kind.NEXUS, target.pinKey());
 				sortList(config.sortMode());
 			});
+
+		if (hotkeys.isEnabled())
+		{
+			client.getMenu().createMenuEntry(1)
+				.setOption("Set hotkey")
+				.setTarget("<col=ff9040>" + target.name + "</col>")
+				.setType(MenuAction.RUNELITE)
+				.onClick(me ->
+				{
+					search.stopTyping();
+					hotkeys.startCapture(TeleportHotkeys.Kind.NEXUS, target.pinKey());
+				});
+			if (hotkeys.get(TeleportHotkeys.Kind.NEXUS, target.pinKey()) != null)
+			{
+				client.getMenu().createMenuEntry(1)
+					.setOption("Reset hotkey")
+					.setTarget("<col=ff9040>" + target.name + "</col>")
+					.setType(MenuAction.RUNELITE)
+					.onClick(me ->
+					{
+						hotkeys.reset(TeleportHotkeys.Kind.NEXUS, target.pinKey());
+						sortList(config.sortMode());
+					});
+			}
+		}
+	}
+
+	/**
+	 * Uses a teleport by its custom hotkey, exactly as the game's own hotkey does: resumes the row's key
+	 * listener component. In scry mode that scries, as the game's hotkey would. Allowed to reach the server in
+	 * the same way as Better Teleport Menu and RuneLite's own bank plugin run game scripts.
+	 */
+	private void useByHotkey(Entry e)
+	{
+		if (client.getGameCycle() < lastHotkeyCycle + HOTKEY_COOLDOWN)
+		{
+			return;
+		}
+		int layer = e.set == 1 ? InterfaceID.TelenexusTeleport.KEY_LISTENERS : InterfaceID.TelenexusTeleport.EXTRA_KEY_LISTENERS;
+		Widget listeners = client.getWidget(layer);
+		if (listeners == null || listeners.getChild(e.index) == null)
+		{
+			return;
+		}
+		lastHotkeyCycle = client.getGameCycle();
+		search.stopTyping();
+		client.createScriptEventBuilder(SCRIPT_RESUME_PAUSEBUTTON, layer, e.index)
+			.build()
+			.setCanSendPackets(true)
+			.run();
+		recordUse(e);
 	}
 
 	/** Records a teleport clicked in the nexus list (not in scry mode, which only looks). */
@@ -597,7 +690,42 @@ public class PohTeleportSorterPlugin extends Plugin implements KeyListener
 		}
 	}
 
-	/** Records a teleport used by its hotkey. Search typing never reaches here (it's taken before any listener). */
+	// Rows showing "Please wait...", so each use is recorded once
+	private final java.util.Set<Widget> waitingRows = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+
+	/**
+	 * Records a teleport used through Better Teleport Menu's hotkeys, which never reach this plugin: that plugin
+	 * writes "Please wait..." on the row it's teleporting with.
+	 */
+	@Subscribe
+	public void onClientTick(ClientTick event)
+	{
+		if (currentEntries.isEmpty())
+		{
+			if (!waitingRows.isEmpty())
+			{
+				waitingRows.clear();
+			}
+			return;
+		}
+		for (Entry e : currentEntries)
+		{
+			String t = e.text.getText();
+			if (t != null && t.contains("Please wait"))
+			{
+				if (waitingRows.add(e.text))
+				{
+					recordUse(e);
+				}
+			}
+			else
+			{
+				waitingRows.remove(e.text);
+			}
+		}
+	}
+
+	/** Records a teleport used by its hotkey. Search typing never reaches here (the search consumes it first). */
 	@Override
 	public void keyTyped(KeyEvent e)
 	{

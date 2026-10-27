@@ -20,6 +20,8 @@ public interface PohTeleportSorterConfig extends Config
 	String RECENT_JEWELLERY = "recentJewellery";
 	String PINNED_NEXUS = "pinnedNexus";
 	String PINNED_JEWELLERY = "pinnedJewellery";
+	String HOTKEYS_NEXUS = "hotkeysNexus";
+	String HOTKEYS_JEWELLERY = "hotkeysJewellery";
 
 	@ConfigSection(
 		name = "Portal Nexus",
@@ -60,7 +62,7 @@ public interface PohTeleportSorterConfig extends Config
 	@ConfigItem(
 		keyName = SHOW_SEARCH,
 		name = "Search field",
-		description = "Show a search field in the title bar of the Portal Nexus and the jewellery box. Takes effect next time a window is opened.",
+		description = "Show a search field in the title bar of the Portal Nexus and the jewellery box. Takes effect next time a window is opened. Not shown while Better Teleport Menu is on, as its hotkeys could fire while you type.",
 		position = 2
 	)
 	default boolean showSearch()
@@ -138,6 +140,19 @@ public interface PohTeleportSorterConfig extends Config
 
 	@ConfigItem(keyName = RECENT_JEWELLERY, name = "", description = "", hidden = true)
 	default String recentJewellery()
+	{
+		return "";
+	}
+
+	// Custom hotkeys: set by right-clicking a teleport and choosing Set hotkey, not shown in the settings panel
+	@ConfigItem(keyName = HOTKEYS_NEXUS, name = "", description = "", hidden = true)
+	default String hotkeysNexus()
+	{
+		return "";
+	}
+
+	@ConfigItem(keyName = HOTKEYS_JEWELLERY, name = "", description = "", hidden = true)
+	default String hotkeysJewellery()
 	{
 		return "";
 	}
