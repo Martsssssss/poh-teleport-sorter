@@ -2,11 +2,11 @@
 
 # POH Teleport Sorter
 
-Sort, pin and search the teleports in your player-owned house: the **Portal Nexus** and the **Ornate Jewellery Box**.
+Sort, pin, search and set your own hotkeys for the teleports in your player-owned house: the **Portal Nexus** and the **Ornate Jewellery Box**.
 
 I made this plugin because I was getting frustrated with the game's default layout of the teleport options and found them hard to use. Both menus list their teleports in a fixed order, the nexus as one long list and the jewellery box as a grid split by jewellery, which makes the one you want slow to find. This plugin lets you lay them out the way you like, with the controls built into the game's own windows in the game's own style.
 
-Every teleport still works exactly as it does in the game: one click (or hotkey) is one teleport. The plugin only changes how the menus are laid out.
+Every teleport still works exactly as it does in the game: one click or one key press is one teleport.
 
 ![Portal Nexus, sorted](docs/screenshots/nexus.png)
 
@@ -43,18 +43,33 @@ Hotkeys, locked (struck-through) teleports and the "Please wait..." message all 
 
 Both windows have a search field in the title bar. Click it and type to filter, e.g. "guild" or "canifis".
 
-- While you're typing, every key goes into the search, so neither the window's teleport hotkeys nor another plugin's shortcuts can fire by accident.
+- While you're typing, every key goes into the search, so the window's teleport hotkeys can't fire by accident.
 - **Enter** finishes typing and keeps the results, so your next key press is a normal hotkey again. Each result still shows its hotkey.
 - **Esc** clears the search.
 - **Ctrl+A** selects the whole search, so you can type over it or clear it with Backspace or Delete.
 
 Ancient teleports can be found by where they land as well as by spell name, so "canifis" finds Kharyll.
 
+The search field isn't shown while Better Teleport Menu is on; see [Compatibility with Better Teleport Menu](#compatibility-with-better-teleport-menu).
+
 ![Searching the jewellery box](docs/screenshots/search.png)
 
 ### Pinning
 
 Right-click any teleport in the Portal Nexus or a jewellery box list and choose **Pin**. Pinned teleports get a pin icon and sit at the top in every Portal Nexus sort order and every jewellery box list layout (the jewellery box's Default grid stays exactly as the game draws it). Right-click and choose **Unpin** to remove one. The left-click option is always the game's own teleport.
+
+### Custom hotkeys
+
+Right-click any teleport in the Portal Nexus or the jewellery box (in any layout) and choose **Set hotkey**. The row shows "Press a key": press the key you want, on its own or with Shift, Ctrl or Alt. Esc cancels. The row then shows your key in place of the game's.
+
+- A teleport with your own key no longer answers to the game's old key for it, so the key shown next to each teleport is always the one that works.
+- If your key was another teleport's game key, that teleport loses it; if it was another teleport's custom key, it moves to the new one.
+- Right-click and choose **Reset hotkey** to give a teleport the game's key back.
+- Teleports past the game's first 35 have no key in the game; you can give them one.
+
+Your hotkeys work in every sort order and layout, and are saved between sessions. Until you set one, the game's own hotkeys are left completely alone.
+
+Custom hotkeys are off while Better Teleport Menu is on; see [Compatibility with Better Teleport Menu](#compatibility-with-better-teleport-menu).
 
 ### Recently used
 
@@ -67,6 +82,27 @@ Two optional settings make teleports that land in the Wilderness easy to spot: F
 - **Wilderness asterisk**: adds a red * after the name
 - **Highlight Wilderness teleports**: shows the name in red
 
+## Compatibility with Better Teleport Menu
+
+[Better Teleport Menu](https://github.com/abextm/better-teleport-menu) is another plugin that sets hotkeys for these windows (and many other teleport menus). Whenever it's on, it handles every key press in the Portal Nexus and jewellery box itself, and RuneLite doesn't let one plugin make sure it sees key presses before another. So that the two never fight over the same key, this plugin's search field and custom hotkeys switch off while Better Teleport Menu is on. This plugin only checks whether Better Teleport Menu is on; it never changes anything about it.
+
+| | Better Teleport Menu off | Better Teleport Menu on |
+| --- | --- | --- |
+| Sort orders and layouts | Yes | Yes |
+| Pinning | Yes | Yes |
+| Recently used | Yes | Yes |
+| Wilderness markers | Yes | Yes |
+| Search field | Yes | Hidden |
+| Custom hotkeys (Set hotkey) | Yes | Off: use Better Teleport Menu's hotkeys instead |
+| Keys shown next to each teleport | The game's, or your own where you've set one | Better Teleport Menu's |
+
+Which to use:
+
+- **Only want hotkeys for the Portal Nexus and jewellery box?** Turn Better Teleport Menu off. This plugin then gives you the search and its own custom hotkeys.
+- **Use Better Teleport Menu for other menus too** (spirit trees, the Construction cape, achievement diary items and so on)? Keep it on. You get every feature of this plugin apart from the search and custom hotkeys, and Better Teleport Menu's hotkeys keep working in both windows.
+
+Custom hotkeys you've set are kept while Better Teleport Menu is on and come back when it's turned off. A change takes effect the next time you open the window.
+
 ## Configuration
 
 Everything can also be controlled from the plugin's settings in the RuneLite sidebar, and changes apply straight away, even with a window open.
@@ -75,7 +111,7 @@ Everything can also be controlled from the plugin's settings in the RuneLite sid
 | --- | --- | --- |
 | Wilderness asterisk | Off | Adds a red * after teleports that land in the Wilderness |
 | Highlight Wilderness teleports | Off | Shows the names of Wilderness teleports in red |
-| Search field | On | Shows the search field in both windows' title bars |
+| Search field | On | Shows the search field in both windows' title bars. Not shown while Better Teleport Menu is on |
 
 **Portal Nexus**
 
