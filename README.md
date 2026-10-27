@@ -105,4 +105,4 @@ You can also see [existing issues](../../issues) to check whether it's already b
 
 ## License
 
-[BSD 2-Clause](LICENSE). The banner's lettering uses the [RuneStar](https://github.com/RuneStar/fonts) recreation of the in-game font (public domain, CC0).
+[BSD 2-Clause](LICENSE). The banner's lettering uses the [RuneScape UF](https://www.dafont.com/runescape-uf.font) font by Nathan P (nayfan), licensed [CC BY-ND 3.0](https://creativecommons.org/licenses/by-nd/3.0/).
