@@ -98,7 +98,7 @@ Two optional settings make teleports that land in the Wilderness easy to spot: F
 
 Which to use:
 
-- **Only want hotkeys for the Portal Nexus and jewellery box?** Turn Better Teleport Menu off. This plugin then gives you the search and its own custom hotkeys.
+- **Only want hotkeys for the Portal Nexus and jewellery box (and lesser variations)?** Turn Better Teleport Menu off. This plugin then gives you the search and its own custom hotkeys.
 - **Use Better Teleport Menu for other menus too** (spirit trees, the Construction cape, achievement diary items and so on)? Keep it on. You get every feature of this plugin apart from the search and custom hotkeys, and Better Teleport Menu's hotkeys keep working in both windows.
 
 Custom hotkeys you've set are kept while Better Teleport Menu is on and come back when it's turned off. A change takes effect the next time you open the window.
