@@ -34,9 +34,11 @@ import net.runelite.client.util.Text;
 /**
  * Ornate jewellery box (interface 590) layouts.
  *
- * The game's six jewellery sections stay alive the whole time, because each teleport's click handler
- * looks its own text widget up. In the list layouts those sections are hidden, the first section's layer
- * becomes the scrolling list, and every row runs the original widget's own click handler.
+ * The list layouts are made from the game's own teleport buttons, so every click and hotkey is the game's own.
+ * In a list, all six jewellery sections are laid exactly over each other as one scrolling list (scrolled
+ * together), their headings and backgrounds are hidden, and each teleport button is moved to its row. The
+ * plugin's headings, icons and pin icons are drawn in the first section, and the row shading in the window
+ * frame underneath. Nothing is ever clicked or run on the player's behalf.
  */
 @Slf4j
 @Singleton
@@ -125,22 +127,6 @@ public class JewelleryBoxSorter
 		final List<Widget> teleports = new ArrayList<>();
 	}
 
-	private static class Row
-	{
-		final Widget mine;
-		final Widget original;
-		final Tele tele;
-		String lastSeen;
-
-		Row(Widget mine, Widget original, Tele tele)
-		{
-			this.mine = mine;
-			this.original = original;
-			this.tele = tele;
-			this.lastSeen = original.getText();
-		}
-	}
-
 	// Selector strip along the bottom of the box
 	private boolean selectorShown;
 	private final List<Widget> stripWidgets = new ArrayList<>();
@@ -148,7 +134,8 @@ public class JewelleryBoxSorter
 	// Captured from the game's layout: every section's position and size, and every teleport's row,
 	// so the grid can be put back exactly as the game drew it
 	private final List<Group> groups = new ArrayList<>();
-	private Widget[] duelingOriginals = new Widget[0];
+	// Each section's own headings, icons and backgrounds (everything but its teleports), hidden in the lists
+	private final List<List<Widget>> sectionDecor = new ArrayList<>();
 	private final java.util.Map<Widget, int[]> gameGeometry = new java.util.IdentityHashMap<>();
 
 	// The jewellery box title bar's clear band and left inner edge, from the game's steelborder script (title
@@ -161,13 +148,17 @@ public class JewelleryBoxSorter
 	// Our widgets
 	private final Widget[] radios = new Widget[JewelleryBoxMode.values().length];
 	private final Widget[] labels = new Widget[JewelleryBoxMode.values().length];
+	// Row shading, drawn in the window frame under the list and cut to the list's edges as it scrolls
 	private final List<Widget> stripes = new ArrayList<>();
+	private final List<int[]> stripeRows = new ArrayList<>();
+	private int listX;
+	private int listY;
+	private int listWidth;
 	private final List<Widget> icons = new ArrayList<>();
 	private final List<Widget> texts = new ArrayList<>();
 	private final List<Widget> suffixes = new ArrayList<>();
 	private final List<Widget> listBackground = new ArrayList<>();
 	private Widget track, dragMiddle, dragTop, dragBottom, arrowUp, arrowDown;
-	private final List<Row> rows = new ArrayList<>();
 
 	private boolean listActive;
 	private int listHeight;
@@ -186,6 +177,8 @@ public class JewelleryBoxSorter
 				headerExtra = 0;
 				titleBar.restore();
 				apply(JewelleryBoxMode.DEFAULT);
+				// After the layout, which would otherwise point them at the custom keys again
+				hotkeys.restoreListeners();
 				hideAll(stripWidgets);
 				// Back to exactly the game's own text and every teleport visible
 				for (Group g : groups)
@@ -209,19 +202,19 @@ public class JewelleryBoxSorter
 	private void clearState()
 	{
 		groups.clear();
-		duelingOriginals = new Widget[0];
+		sectionDecor.clear();
 		gameGeometry.clear();
 		titleBar.forget();
 		headerExtra = 0;
 		java.util.Arrays.fill(radios, null);
 		java.util.Arrays.fill(labels, null);
 		stripes.clear();
+		stripeRows.clear();
 		icons.clear();
 		texts.clear();
 		suffixes.clear();
 		listBackground.clear();
 		track = dragMiddle = dragTop = dragBottom = arrowUp = arrowDown = null;
-		rows.clear();
 		listActive = false;
 		selectorShown = false;
 		stripWidgets.clear();
@@ -315,25 +308,63 @@ public class JewelleryBoxSorter
 			search.attach(universe, frame, SEARCH_BAND, () -> apply(config.jewelleryBoxMode()));
 		}
 		apply(config.jewelleryBoxMode());
-		registerHotkeys();
 	}
 
-	/** Tells the custom hotkeys which teleports this box has, each used exactly as clicking it would. */
-	private void registerHotkeys()
+	// poh_jewellery_box_keypress (on each teleport's 1x1 key listener in the window) and poh_jewellery_box_op (on
+	// the teleport itself): script id, then three event or position values, then the text to show when the
+	// teleport is ready again and the two characters its hotkey matches (upper, lower)
+	private static final int SCRIPT_KEYPRESS = 1689;
+	private static final int SCRIPT_OP = 1690;
+	private static final int ARGS = 8;
+	private static final int ARG_KEY_INDEX = 2;
+	private static final int ARG_TEXT = 5;
+	private static final int ARG_UPPER = 6;
+	private static final int ARG_LOWER = 7;
+
+	/**
+	 * Points each teleport's own game hotkey at the key it should answer to: its custom hotkey, or the game's key
+	 * unless another teleport's custom hotkey took it. Only the characters the game's listeners match (and the text
+	 * they put back after "Please wait...") are changed; the game still handles the key press and the teleport.
+	 * With no custom hotkeys, the game's listeners are put back exactly as they were.
+	 */
+	private void applyHotkeys()
 	{
-		List<TeleportHotkeys.Target> targets = new ArrayList<>();
+		Widget universe = client.getWidget(InterfaceID.PohJewelleryBox.UNIVERSE);
+		if (universe == null || groups.isEmpty())
+		{
+			return;
+		}
+		hotkeys.setWindow(TeleportHotkeys.Kind.JEWELLERY, this::redrawLabels);
+		if (!hotkeys.isEnabled())
+		{
+			// Better Teleport Menu runs these keys itself; leave its listeners alone
+			return;
+		}
+		if (!hotkeys.hasAny(TeleportHotkeys.Kind.JEWELLERY))
+		{
+			hotkeys.restoreListeners();
+			return;
+		}
 		for (Group g : groups)
 		{
 			for (Widget orig : g.teleports)
 			{
-				targets.add(new TeleportHotkeys.Target(sortName(orig), gameKey(orig), () ->
+				Object[] op = orig.getOnOpListener();
+				if (!TeleportHotkeys.isExpectedShape(op, SCRIPT_OP, ARGS) || !(op[ARG_KEY_INDEX] instanceof Integer))
 				{
-					search.stopTyping();
-					runOriginal(orig);
-				}));
+					// No listener while "Please wait..." shows; the game puts it back from the one it had
+					continue;
+				}
+				String key = hotkeys.effectiveKey(TeleportHotkeys.Kind.JEWELLERY, sortName(orig), gameKey(orig));
+				String[] chars = TeleportHotkeys.characters(key);
+				String text = TeleportHotkeys.relabel(TeleportHotkeys.Kind.JEWELLERY, originalTexts.get(orig), key);
+				hotkeys.setArguments(orig, false, SCRIPT_OP, ARGS,
+					ARG_TEXT, text, ARG_UPPER, chars[0], ARG_LOWER, chars[1]);
+				Widget listener = universe.getChild((Integer) op[ARG_KEY_INDEX]);
+				hotkeys.setArguments(listener, true, SCRIPT_KEYPRESS, ARGS,
+					ARG_TEXT, text, ARG_UPPER, chars[0], ARG_LOWER, chars[1]);
 			}
 		}
-		hotkeys.setTargets(TeleportHotkeys.Kind.JEWELLERY, targets, this::redrawLabels);
 	}
 
 	/** Redraws every teleport's text, after a custom hotkey changes. */
@@ -351,6 +382,7 @@ public class JewelleryBoxSorter
 		{
 			showDefault();
 		}
+		applyHotkeys();
 	}
 
 	/** The game's own key for a teleport, from the text the game gave it ("<col=ccccff>1:</col> Ring of dueling"). */
@@ -377,13 +409,14 @@ public class JewelleryBoxSorter
 	}
 
 	/**
-	 * Adds "Set hotkey" (and "Reset hotkey" when one is set) to the right-click menu of a teleport, in the grid
-	 * and in the lists. Added only when the menu opens, below the game's own options.
+	 * Adds "Pin" or "Unpin" (in the lists), then "Set hotkey" and "Reset hotkey" (when one is set) to the right-click
+	 * menu of a teleport. Added only when the menu opens, below the game's own options, so the left-click option is
+	 * always the game's own teleport.
 	 */
 	@Subscribe
 	public void onMenuOpened(MenuOpened event)
 	{
-		if (groups.isEmpty() || !hotkeys.isEnabled() || client.getWidget(InterfaceID.PohJewelleryBox.UNIVERSE) == null)
+		if (groups.isEmpty() || client.getWidget(InterfaceID.PohJewelleryBox.UNIVERSE) == null)
 		{
 			return;
 		}
@@ -401,6 +434,25 @@ public class JewelleryBoxSorter
 			return;
 		}
 		final String name = sortName(orig);
+		if (listActive)
+		{
+			// Pinning is for the lists; the Default grid stays exactly as the game draws it
+			boolean isPinned = pins.isPinned(PinStore.Kind.JEWELLERY, name);
+			client.getMenu().createMenuEntry(1)
+				.setOption(isPinned ? "Unpin" : "Pin")
+				.setTarget("<col=ff9040>" + name + "</col>")
+				.setType(MenuAction.RUNELITE)
+				.onClick(me ->
+				{
+					pins.toggle(PinStore.Kind.JEWELLERY, name);
+					showList(config.jewelleryBoxMode(), true);
+					refreshRadios(config.jewelleryBoxMode());
+				});
+		}
+		if (!hotkeys.isEnabled())
+		{
+			return;
+		}
 		client.getMenu().createMenuEntry(1)
 			.setOption("Set hotkey")
 			.setTarget("<col=ff9040>" + name + "</col>")
@@ -424,25 +476,10 @@ public class JewelleryBoxSorter
 		}
 	}
 
-	/** The game's teleport a menu entry is on: one of the grid's own teleports, or a list row standing in for one. */
+	/** The game's teleport a menu entry is on, in the grid or a list (both are the game's own buttons). */
 	private Widget teleportFor(int componentId, int childIndex)
 	{
 		if (childIndex < 0)
-		{
-			return null;
-		}
-		if (listActive && componentId == InterfaceID.PohJewelleryBox.DUELING)
-		{
-			for (Row r : rows)
-			{
-				if (r.mine.getIndex() == childIndex && !r.mine.isHidden())
-				{
-					return r.original;
-				}
-			}
-			return null;
-		}
-		if (listActive)
 		{
 			return null;
 		}
@@ -450,7 +487,7 @@ public class JewelleryBoxSorter
 		{
 			for (Widget orig : g.teleports)
 			{
-				if (orig.getId() == componentId && orig.getIndex() == childIndex)
+				if (orig.getId() == componentId && orig.getIndex() == childIndex && !orig.isHidden())
 				{
 					return orig;
 				}
@@ -524,8 +561,8 @@ public class JewelleryBoxSorter
 
 	/**
 	 * Every frame while the box is open: records a teleport as used the moment the game shows its
-	 * "Please wait..." (so clicks, hotkeys and list rows all count), and mirrors the originals' text onto the
-	 * list rows so "Please wait..." shows there too.
+	 * "Please wait..." (so clicks and hotkeys, in the grid and the lists, all count), and puts the Wilderness
+	 * styling back on a teleport's text when the game resets it afterwards.
 	 */
 	@Subscribe
 	public void onClientTick(ClientTick event)
@@ -553,10 +590,13 @@ public class JewelleryBoxSorter
 				else if (!isWaiting)
 				{
 					waiting.remove(orig);
-					// After "Please wait..." the game puts its own text back; show the right key and styling again.
-					// Only the game's own text is replaced, so nothing another plugin wrote is ever overwritten.
+					// After "Please wait..." the game puts back the text its listener holds (the game's own, or the
+					// plain text with this plugin's key); add the Wilderness styling again. Only those two texts are
+					// replaced, so nothing another plugin wrote is ever overwritten.
 					String gameText = originalTexts.get(orig);
-					if (t != null && t.equals(gameText))
+					String keyed = gameText == null ? null : TeleportHotkeys.relabel(TeleportHotkeys.Kind.JEWELLERY, gameText,
+						hotkeys.effectiveKey(TeleportHotkeys.Kind.JEWELLERY, sortName(orig), gameKey(orig)));
+					if (t != null && (t.equals(gameText) || t.equals(keyed)))
 					{
 						String name = sortName(orig);
 						String want = styled(baseText(orig), name, JewelleryTeleports.isWild(name));
@@ -569,17 +609,6 @@ public class JewelleryBoxSorter
 			}
 		}
 
-		for (Row r : new ArrayList<>(rows))
-		{
-			String t = r.original.getText();
-			if (t != null && !t.equals(r.lastSeen))
-			{
-				r.lastSeen = t;
-				// The row shows the key this plugin would show, or, with Better Teleport Menu on, whatever it wrote
-				String text = hotkeys.isEnabled() ? baseText(r.original) : t;
-				r.mine.setText(t.contains("Please wait") ? t : styled(text, r.tele.name, r.tele.wild));
-			}
-		}
 	}
 
 	/** The text with the optional Wilderness styling applied. */
@@ -598,6 +627,7 @@ public class JewelleryBoxSorter
 			Group g = new Group();
 			g.title = "";
 			g.titleColour = TITLE_LOCKED_COLOUR;
+			List<Widget> decor = new ArrayList<>();
 			if (layer != null && layer.getDynamicChildren() != null)
 			{
 				for (Widget c : layer.getDynamicChildren())
@@ -610,8 +640,10 @@ public class JewelleryBoxSorter
 					{
 						g.teleports.add(c);
 						originalTexts.put(c, c.getText());
+						continue;
 					}
-					else if (c.getType() == WidgetType.TEXT && g.title.isEmpty())
+					decor.add(c);
+					if (c.getType() == WidgetType.TEXT && g.title.isEmpty())
 					{
 						g.title = Text.removeTags(c.getText());
 						g.titleColour = c.getTextColor();
@@ -623,13 +655,7 @@ public class JewelleryBoxSorter
 				}
 			}
 			groups.add(g);
-		}
-
-		Widget dueling = client.getWidget(InterfaceID.PohJewelleryBox.DUELING);
-		if (dueling != null)
-		{
-			Widget[] kids = dueling.getDynamicChildren();
-			duelingOriginals = kids != null ? kids.clone() : new Widget[0];
+			sectionDecor.add(decor);
 		}
 
 		for (int id : SECTIONS)
@@ -646,7 +672,10 @@ public class JewelleryBoxSorter
 		{
 			for (Widget t : g.teleports)
 			{
-				gameGeometry.put(t, new int[]{t.getOriginalY(), t.getOriginalHeight()});
+				gameGeometry.put(t, new int[]{
+					t.getOriginalX(), t.getOriginalY(), t.getOriginalWidth(), t.getOriginalHeight(),
+					t.getXPositionMode(), t.getYPositionMode(), t.getWidthMode(), t.getHeightMode(),
+					t.getXTextAlignment(), t.getYTextAlignment()});
 			}
 		}
 	}
@@ -671,21 +700,63 @@ public class JewelleryBoxSorter
 			section.setWidthMode(g[6]);
 			section.setHeightMode(g[7]);
 		}
+		restoreTeleportGeometry();
+		for (int id : SECTIONS)
+		{
+			revalidateTree(client.getWidget(id));
+		}
+	}
+
+	/** Puts every teleport button back at the game's own position, size and text alignment within its section. */
+	private void restoreTeleportGeometry()
+	{
 		for (Group grp : groups)
 		{
 			for (Widget t : grp.teleports)
 			{
 				int[] g = gameGeometry.get(t);
-				if (g != null)
+				if (g == null)
 				{
-					t.setOriginalY(g[0]);
-					t.setOriginalHeight(g[1]);
+					continue;
 				}
+				t.setOriginalX(g[0]);
+				t.setOriginalY(g[1]);
+				t.setOriginalWidth(g[2]);
+				t.setOriginalHeight(g[3]);
+				t.setXPositionMode(g[4]);
+				t.setYPositionMode(g[5]);
+				t.setWidthMode(g[6]);
+				t.setHeightMode(g[7]);
+				t.setXTextAlignment(g[8]);
+				t.setYTextAlignment(g[9]);
 			}
 		}
+	}
+
+	/** Shows or hides every section's own headings, icons and backgrounds. */
+	private void showDecor(boolean show)
+	{
+		for (List<Widget> decor : sectionDecor)
+		{
+			for (Widget w : decor)
+			{
+				w.setHidden(!show);
+			}
+		}
+	}
+
+	/** Every section's scroll position and size, set together so the overlaid sections move as one list. */
+	private void setSectionScroll(int scrollHeight, int scrollY)
+	{
 		for (int id : SECTIONS)
 		{
-			revalidateTree(client.getWidget(id));
+			Widget section = client.getWidget(id);
+			if (section != null)
+			{
+				section.setScrollHeight(scrollHeight);
+				section.setScrollY(scrollY);
+				section.revalidateScroll();
+			}
 		}
 	}
 
@@ -708,44 +779,37 @@ public class JewelleryBoxSorter
 			w.setHidden(!selectorShown);
 		}
 		refreshRadios(mode);
+		applyHotkeys();
 	}
 
 	private void showDefault()
 	{
 		listActive = false;
-		rows.clear();
 
-		for (int i = 1; i < SECTIONS.length; i++)
+		for (int id : SECTIONS)
 		{
-			Widget w = client.getWidget(SECTIONS[i]);
+			Widget w = client.getWidget(id);
 			if (w != null)
 			{
 				w.setHidden(false);
 			}
 		}
+		Widget dueling = client.getWidget(InterfaceID.PohJewelleryBox.DUELING);
+		if (dueling != null)
+		{
+			dueling.setOnScrollWheelListener((Object[]) null);
+		}
+		setSectionScroll(0, 0);
+		showDecor(true);
 
 		if (customGrid())
 		{
+			restoreTeleportGeometry();
 			layoutDefault();
 		}
 		else
 		{
 			restoreGameGrid();
-		}
-
-		Widget dueling = client.getWidget(InterfaceID.PohJewelleryBox.DUELING);
-		if (dueling != null)
-		{
-			dueling.setScrollY(0);
-			dueling.setScrollHeight(0);
-			for (Widget w : duelingOriginals)
-			{
-				if (w != null)
-				{
-					w.setHidden(false);
-				}
-			}
-			revalidateTree(dueling);
 		}
 
 		// Search on the default grid: teleports that don't match are hidden where they are, so the grid itself
@@ -893,22 +957,6 @@ public class JewelleryBoxSorter
 		}
 		int previousScroll = keepScroll && listActive ? dueling.getScrollY() : 0;
 
-		for (int i = 1; i < SECTIONS.length; i++)
-		{
-			Widget w = client.getWidget(SECTIONS[i]);
-			if (w != null)
-			{
-				w.setHidden(true);
-			}
-		}
-		for (Widget w : duelingOriginals)
-		{
-			if (w != null)
-			{
-				w.setHidden(true);
-			}
-		}
-
 		int width = universe.getWidth();
 		int height = universe.getHeight();
 		int bottom = MARGIN + (selectorShown ? RESERVE : 0);
@@ -918,20 +966,41 @@ public class JewelleryBoxSorter
 
 		buildListBackground(frame, boxTop, boxW, boxH);
 
-		// The first section's layer becomes the scrolling list, inset by the thinbox border
-		dueling.setXPositionMode(WidgetPositionMode.ABSOLUTE_LEFT);
-		dueling.setYPositionMode(WidgetPositionMode.ABSOLUTE_TOP);
-		dueling.setWidthMode(WidgetSizeMode.ABSOLUTE);
-		dueling.setHeightMode(WidgetSizeMode.ABSOLUTE);
-		dueling.setOriginalX(MARGIN + 2);
-		dueling.setOriginalY(boxTop + 2);
-		dueling.setOriginalWidth(boxW - 4);
-		dueling.setOriginalHeight(boxH - 4);
-		dueling.revalidate();
+		// All six sections become the same scrolling list, inset by the thinbox border and laid exactly over each
+		// other, with their own headings and backgrounds hidden; each keeps its own teleport buttons
+		listX = MARGIN + 2;
+		listY = boxTop + 2;
+		listWidth = boxW - 4;
 		listHeight = boxH - 4;
+		for (int id : SECTIONS)
+		{
+			Widget section = client.getWidget(id);
+			if (section == null)
+			{
+				continue;
+			}
+			section.setXPositionMode(WidgetPositionMode.ABSOLUTE_LEFT);
+			section.setYPositionMode(WidgetPositionMode.ABSOLUTE_TOP);
+			section.setWidthMode(WidgetSizeMode.ABSOLUTE);
+			section.setHeightMode(WidgetSizeMode.ABSOLUTE);
+			section.setOriginalX(listX);
+			section.setOriginalY(listY);
+			section.setOriginalWidth(listWidth);
+			section.setOriginalHeight(listHeight);
+			section.setHidden(false);
+			section.revalidate();
+		}
+		showDecor(false);
 
-		allocatePools(dueling);
-		rows.clear();
+		allocatePools(dueling, frame);
+		// Every teleport starts hidden; the layout shows the ones in the list
+		for (Group g : groups)
+		{
+			for (Widget orig : g.teleports)
+			{
+				orig.setHidden(true);
+			}
+		}
 		List<Tele> all = matchingTeles();
 		int contentHeight;
 		if (all.isEmpty() && !search.query().isEmpty())
@@ -951,15 +1020,20 @@ public class JewelleryBoxSorter
 			contentHeight = layoutSections(jewellerySections(all), true);
 		}
 
-		dueling.setScrollHeight(Math.max(contentHeight, listHeight));
-		dueling.setScrollY(Math.max(0, Math.min(previousScroll, Math.max(contentHeight - listHeight, 0))));
+		int scrollHeight = Math.max(contentHeight, listHeight);
+		setSectionScroll(scrollHeight, Math.max(0, Math.min(previousScroll, Math.max(contentHeight - listHeight, 0))));
+		// The wheel is read from the first section; all six cover the same area and scroll together
 		dueling.setHasListener(true);
 		dueling.setOnScrollWheelListener((JavaScriptCallback) ev -> scrollTo(dueling.getScrollY() + ev.getMouseY() * WHEEL_STEP));
-		revalidateTree(dueling);
-		dueling.revalidateScroll();
+		for (int id : SECTIONS)
+		{
+			revalidateTree(client.getWidget(id));
+		}
+		setSectionScroll(scrollHeight, dueling.getScrollY());
 
-		buildScrollbar(universe, boxTop, boxH);
 		listActive = true;
+		buildScrollbar(universe, boxTop, boxH);
+		layoutStripes();
 	}
 
 	/** Every teleport the box has, in the game's order, filtered by the search text. */
@@ -1083,7 +1157,8 @@ public class JewelleryBoxSorter
 	private int layoutSections(List<Section> sections, boolean withIcons)
 	{
 		int headerX = withIcons ? TEXT_INDENT : 8;
-		int y = LIST_TOP_PAD, stripe = 0, icon = 0, text = 0, suffix = 0, pin = 0;
+		int y = LIST_TOP_PAD, icon = 0, text = 0, suffix = 0, pin = 0;
+		stripeRows.clear();
 		List<String> pinned = pins.list(PinStore.Kind.JEWELLERY);
 		// When the list has headings (Pinned, Recently used), rows without a heading of their own carry straight
 		// on from the block above: same indent, same row height, no gap, and the shading keeps alternating
@@ -1128,13 +1203,8 @@ public class JewelleryBoxSorter
 
 			for (Tele t : sec.teles)
 			{
-				Widget s = stripes.get(stripe++);
-				placeIn(s, 0, y, -1, rowH);
-				shade(s, n++);
-
-				Widget row = texts.get(text++);
-				placeIn(row, rowX, y, -1, rowH);
-				bindTeleport(row, t);
+				stripeRows.add(new int[]{y, rowH, n++});
+				placeTeleport(t, rowX, y, rowH);
 
 				// Pinned rows get the pin icon at the far right; the jewellery name (where shown) sits left of it
 				boolean isPinned = PinStore.indexOf(pinned, t.name) >= 0;
@@ -1180,7 +1250,6 @@ public class JewelleryBoxSorter
 			}
 		}
 
-		hideFrom(stripes, stripe);
 		hideFrom(icons, icon);
 		hideFrom(texts, text);
 		hideFrom(suffixes, suffix);
@@ -1197,7 +1266,7 @@ public class JewelleryBoxSorter
 		msg.setText("No teleports match \"" + Text.escapeJagex(search.query()) + "\"");
 		msg.setHidden(false);
 		msg.revalidate();
-		hideAll(stripes);
+		stripeRows.clear();
 		hideAll(icons);
 		hideFrom(texts, 1);
 		hideAll(suffixes);
@@ -1230,67 +1299,66 @@ public class JewelleryBoxSorter
 		return (colon >= 0 && colon < 4 ? t.substring(colon + 1) : t).trim();
 	}
 
-	private void bindTeleport(Widget t, Tele tele)
+	/**
+	 * Moves the game's own teleport button to its row in the list. It keeps its own click, hotkey, hover colour and
+	 * "Please wait..." exactly as the game made them; only its place, size and text alignment change.
+	 */
+	private void placeTeleport(Tele tele, int x, int y, int rowH)
 	{
 		Widget orig = tele.orig;
-		styleText(t, FontID.PLAIN_11, TELE_COLOUR);
+		orig.setXPositionMode(WidgetPositionMode.ABSOLUTE_LEFT);
+		orig.setYPositionMode(WidgetPositionMode.ABSOLUTE_TOP);
+		orig.setOriginalX(x);
+		orig.setOriginalY(y);
+		orig.setWidthMode(WidgetSizeMode.MINUS);
+		orig.setOriginalWidth(x * 2);
+		orig.setHeightMode(WidgetSizeMode.ABSOLUTE);
+		orig.setOriginalHeight(rowH);
+		orig.setXTextAlignment(WidgetTextAlignment.LEFT);
+		orig.setYTextAlignment(WidgetTextAlignment.CENTER);
 		String now = orig.getText();
-		t.setText(now != null && now.contains("Please wait") ? now : styled(baseText(orig), tele.name, tele.wild));
-		String[] actions = orig.getActions();
-		String op = actions != null && actions.length > 0 && actions[0] != null ? actions[0] : "Teleport";
-		clearOps(t);
-		// First action is the game's own teleport (left-click); Pin/Unpin is the second, right-click only
-		t.setAction(0, op);
-		t.setAction(1, pins.isPinned(PinStore.Kind.JEWELLERY, tele.name) ? "Unpin" : "Pin");
-		t.setName("");
-		t.setHasListener(true);
-		// A widget op event reports the action index plus one, as RuneLite's own plugins read it
-		t.setOnOpListener((JavaScriptCallback) ev ->
+		if (originalTexts.containsKey(orig) && now != null && !now.contains("Please wait"))
 		{
-			if (ev.getOp() == 2)
-			{
-				pins.toggle(PinStore.Kind.JEWELLERY, tele.name);
-				showList(config.jewelleryBoxMode(), true);
-				refreshRadios(config.jewelleryBoxMode());
-			}
-			else
-			{
-				search.stopTyping();
-				runOriginal(orig);
-			}
-		});
-		t.setOnMouseOverListener((JavaScriptCallback) ev -> t.setTextColor(HOVER_COLOUR));
-		t.setOnMouseLeaveListener((JavaScriptCallback) ev -> t.setTextColor(TELE_COLOUR));
-		t.setHidden(false);
-		t.revalidate();
-		rows.add(new Row(t, orig, tele));
+			orig.setText(styled(baseText(orig), tele.name, tele.wild));
+		}
+		orig.setHidden(false);
+		orig.revalidate();
 	}
 
 	/**
-	 * Runs the game's own click handler for the original teleport, exactly as clicking it in the grid would.
-	 * Since July 2026 RuneLite blocks scripts run by plugins from sending anything to the server unless
-	 * they're allowed to; this is one click for one teleport, allowed the same way RuneLite's own bank
-	 * plugin runs the bank PIN buttons' click scripts.
+	 * Draws the row shading for the list as it's scrolled: each stripe in the window frame (underneath every
+	 * section, so it never darkens a teleport's text), cut to the list's top and bottom edges.
 	 */
-	private void runOriginal(Widget orig)
+	private void layoutStripes()
 	{
-		Object[] listener = orig.getOnOpListener();
-		if (listener == null)
+		Widget dueling = client.getWidget(InterfaceID.PohJewelleryBox.DUELING);
+		int scroll = dueling != null ? dueling.getScrollY() : 0;
+		int used = 0;
+		if (listActive)
 		{
-			return;
+			for (int[] r : stripeRows)
+			{
+				int top = Math.max(r[0] - scroll, 0);
+				int bottom = Math.min(r[0] + r[1] - scroll, listHeight);
+				if (bottom <= top || used >= stripes.size())
+				{
+					continue;
+				}
+				Widget s = stripes.get(used++);
+				placeAbs(s, listX, listY + top, listWidth, bottom - top);
+				shade(s, r[2]);
+			}
 		}
-		client.createScriptEventBuilder(listener)
-			.setSource(orig)
-			.setOp(1)
-			.build()
-			.setCanSendPackets(true)
-			.run();
+		hideFrom(stripes, used);
 	}
 
 	// ---------------------------------------------------------------- widget pools
 
-	/** Creates every list widget once, in draw order: stripes under icons under text. */
-	private void allocatePools(Widget layer)
+	/**
+	 * Creates every list widget once: the row shading in the window frame (after the list's background, so it's
+	 * drawn on top of it), and the headings, icons, jewellery names and pin icons in the first section.
+	 */
+	private void allocatePools(Widget layer, Widget frame)
 	{
 		int teleCount = 0;
 		for (Group g : groups)
@@ -1299,9 +1367,9 @@ public class JewelleryBoxSorter
 		}
 		// Headings: one per jewellery (the most any layout uses), plus the Pinned heading
 		int headings = Math.max(groups.size(), 2) + 1;
-		grow(layer, stripes, WidgetType.RECTANGLE, teleCount);
+		grow(frame, stripes, WidgetType.RECTANGLE, teleCount + 1);
 		grow(layer, icons, WidgetType.GRAPHIC, groups.size());
-		grow(layer, texts, WidgetType.TEXT, teleCount + headings);
+		grow(layer, texts, WidgetType.TEXT, headings);
 		grow(layer, suffixes, WidgetType.TEXT, teleCount);
 		grow(layer, pinIcons, WidgetType.GRAPHIC, teleCount);
 	}
@@ -1522,9 +1590,9 @@ public class JewelleryBoxSorter
 		{
 			return;
 		}
-		dueling.setScrollY(Math.max(0, Math.min(y, maxScroll())));
-		dueling.revalidateScroll();
+		setSectionScroll(dueling.getScrollHeight(), Math.max(0, Math.min(y, maxScroll())));
 		updateDragger();
+		layoutStripes();
 	}
 
 	private void updateDragger()
