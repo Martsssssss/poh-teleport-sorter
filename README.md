@@ -35,7 +35,7 @@ A strip of layout buttons runs along the bottom of the jewellery box:
 - **Alphabetical**: every teleport in one A to Z list, with the jewellery it's on shown on the right
 - **Recently Used**: the teleports you've used most recently first, then the rest A to Z
 
-Hotkeys, locked (struck-through) teleports and the "Please wait..." message all behave exactly as they do in the game.
+The lists are made from the game's own teleport buttons, just moved into a different order, so clicks, hotkeys, locked (struck-through) teleports and the "Please wait..." message all behave exactly as they do in the game.
 
 ![Jewellery box as a list](docs/screenshots/jewellery-list.png)
 
@@ -60,14 +60,15 @@ Right-click any teleport in the Portal Nexus or a jewellery box list and choose 
 
 ### Custom hotkeys
 
-Right-click any teleport in the Portal Nexus or the jewellery box (in any layout) and choose **Set hotkey**. The row shows "Press a key": press the key you want, on its own or with Shift, Ctrl or Alt. Esc cancels. The row then shows your key in place of the game's.
+Right-click any teleport in the Portal Nexus or the jewellery box (in any layout) and choose **Set hotkey**. The row shows "Press a key": press a letter, number or symbol. Esc cancels. The row then shows your key in place of the game's.
 
+- Hotkeys are single keys, as the game's own are. Letters work with or without Shift; Ctrl, Alt and F-keys can't be used.
 - A teleport with your own key no longer answers to the game's old key for it, so the key shown next to each teleport is always the one that works.
 - If your key was another teleport's game key, that teleport loses it; if it was another teleport's custom key, it moves to the new one.
 - Right-click and choose **Reset hotkey** to give a teleport the game's key back.
 - Teleports past the game's first 35 have no key in the game; you can give them one.
 
-Your hotkeys work in every sort order and layout, and are saved between sessions. Until you set one, the game's own hotkeys are left completely alone.
+Your hotkeys work in every sort order and layout, and are saved between sessions. They use the game's own hotkey handling: the plugin only changes which key each teleport listens for, and the game does the rest. Until you set one, the game's own hotkeys are left completely alone.
 
 Custom hotkeys are off while Better Teleport Menu is on; see [Compatibility with Better Teleport Menu](#compatibility-with-better-teleport-menu).
 
